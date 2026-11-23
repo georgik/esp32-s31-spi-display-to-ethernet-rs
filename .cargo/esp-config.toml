@@ -1,0 +1,17 @@
+# Keep user/runtime configuration values in this file.
+#
+# The firmware logs over the USB-UART serial port via the `log` crate +
+# esp-println (not defmt). esp-println bakes the maximum log level into the
+# binary at build time from the `ESP_LOG` variable, so it MUST be set here for
+# our logs to appear on the serial monitor. Valid values: Off, Error, Warn,
+# Info, Debug, Trace. "Debug" shows everything our firmware emits.
+[env]
+# Info (not Debug): esp_hal's DMA driver logs `debug!("Preparing RX transfer", …)`
+# on EVERY SPI RX transfer. At Debug that floods the console many times per
+# second, and espflash's host-side symbol decoder then tries to resolve the
+# `0x…` DMA-buffer address printed inside that line (it isn't a code address, so
+# it prints `0x… - .L_MergedGlobals.NNNN / at ??:??`). Info keeps all the
+# useful bring-up logs (they are all `info!`) while suppressing the per-transfer
+# DMA spam and the resulting symbol-decoder noise. Bump back to "Debug" only when
+# actively tracing the capture path.
+ESP_LOG = "Info"

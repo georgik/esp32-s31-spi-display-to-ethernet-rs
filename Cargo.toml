@@ -1,0 +1,110 @@
+[package]
+edition      = "2024"
+name         = "esp32-s31-spi-display-to-ethernet"
+version      = "0.1.0"
+default-run  = "esp32-s31-spi-display-to-ethernet"
+
+[[bin]]
+name = "esp32-s31-spi-display-to-ethernet"
+path = "./src/bin/main.rs"
+test = false
+
+[lib]
+name = "esp32_s31_spi_display_to_ethernet"
+path = "./src/lib.rs"
+test = false
+
+[patch.crates-io]
+# The ESP32-S31 support in the released esp-hal crates is incomplete - in
+# particular the RGMII EMAC driver the Gigabit-Ethernet transport needs is
+# absent from the 1.2.x release. We therefore pin the whole esp-rs stack to one
+# exact commit of the official esp-rs/esp-hal repository (commit 27f2ce390),
+# which has the esp32s31 + RGMII EMAC support. Using a git rev (instead of a
+# local path) keeps the build portable: anyone can clone and build without our
+# local `repos/` copy. The crate versions on that commit match the released
+# ones (esp-hal 1.2.0 / esp-rtos 0.4.0 / esp-alloc 0.11.0 / esp-println 0.18.0 /
+# esp-backtrace 0.20.0 / esp-bootloader-esp-idf 0.6.0), so `esp-hal` is `1.2`
+# (not `~1.2.2`) below to stay satisfiable by the patched source.
+esp-hal                = { git = "https://github.com/esp-rs/esp-hal", rev = "27f2ce390c3edc0b4db566c05aad9dfc613f545d" }
+esp-rtos               = { git = "https://github.com/esp-rs/esp-hal", rev = "27f2ce390c3edc0b4db566c05aad9dfc613f545d" }
+esp-alloc              = { git = "https://github.com/esp-rs/esp-hal", rev = "27f2ce390c3edc0b4db566c05aad9dfc613f545d" }
+esp-println            = { git = "https://github.com/esp-rs/esp-hal", rev = "27f2ce390c3edc0b4db566c05aad9dfc613f545d" }
+esp-backtrace          = { git = "https://github.com/esp-rs/esp-hal", rev = "27f2ce390c3edc0b4db566c05aad9dfc613f545d" }
+esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal", rev = "27f2ce390c3edc0b4db566c05aad9dfc613f545d" }
+
+[dependencies]
+esp-hal = { version = "1.2", features = ["esp32s31", "unstable"] }
+
+esp-rtos = { version = "0.4.0", features = [
+  "embassy",
+  "esp-alloc",
+  "esp32s31",
+] }
+
+esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32s31"] }
+
+embassy-executor = { version = "0.10.0" }
+embassy-time     = { version = "0.5.0" }
+esp-alloc        = { version = "0.11.0", features = ["esp32s31"] }
+
+critical-section = "1.2.0"
+static_cell      = "2.1.1"
+
+# Logging over the USB-UART serial port (esp-println) so output is visible on a
+# plain serial monitor. The `log-04` feature bridges the `log` crate to
+# esp-println; `init_logger_from_env()` configures the level via the
+# ESP_LOG / RUST_LOG environment variable.
+esp-println   = { version = "0.18.0", features = ["log-04", "esp32s31"] }
+log           = { version = "0.4.29" }
+embassy-sync = "0.8"
+
+# --- Network transport -------------------------------------------------------
+#
+# The ESP32-S31-Function-CoreBoard-1 has Gigabit Ethernet (EMAC over RGMII to a
+# Motorcomm YT8531 PHY). `esp32-s31-coreboard` is the board-support crate for
+# that board (git rev 17ea718 of
+# github.com/Hahihula/s31-coreboard-rust-examples): it knows the RGMII pin map,
+# the PHY reset line, the MAC address derivation and `init_gigabit()` (MPLL at
+# 500 MHz so the RGMII TX clock can reach 125 MHz). `embassy-net` provides the
+# TCP stack + DHCP; `embedded-io-async` is the write trait the TCP socket uses.
+# Pinned to an exact git rev (instead of a local path) so the build is portable
+# without our local `repos/` copy.
+esp32-s31-coreboard = { git = "https://github.com/Hahihula/s31-coreboard-rust-examples.git", rev = "17ea71851a1e3f7e0b30855ca7d7d090999f1d39" }
+embassy-net         = { version = "0.9.1", features = [
+  "dhcpv4", "dns", "log", "medium-ethernet", "tcp", "udp",
+] }
+embedded-io-async   = "0.7.0"
+
+# On-device JPEG encoder for the live `/frame` endpoint. Pure-Rust and
+# `#![no_std]` (needs only `alloc`, which we provide from PSRAM via esp-alloc),
+# so it builds for `riscv32imafc-unknown-none-elf`. We disable default features
+# to drop the `std`/`simd` (AVX2) paths; the scalar fallback is used on RISC-V.
+# `encode()` consumes the encoder by value, which releases its borrow on the
+# output `Vec`, so the encoded bytes are readable afterwards.
+jpeg-encoder = { version = "0.7.1", default-features = false }
+esp-backtrace       = { version = "0.20.0", features = ["esp32s31", "panic-handler", "println"] }
+
+[features]
+# No default features; everything below is opt-in.
+default = []
+
+# Lightweight, non-blocking capture diagnostics: a rolling per-read summary
+# (non-zero count + command-byte offsets) printed on the rare heartbeat. Opt-in
+# so production captures stay quiet.
+diag = []
+# Heavy, blocking raw-hex dump of the first reads. Off by default: it parks the
+# capture core on UART long enough to fragment the stream.
+diag-hex = []
+# Verbose per-command `debug!` from the byte scanner. Off by default so a clean
+# production capture never blocks the capture core on UART mid-frame.
+capture-log = []
+
+[profile.dev]
+# The default debug profile is too slow and too big for resource-constrained devices.
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1     # LLVM can perform better optimizations using a single thread
+debug         = 2     # prefer slower builds but better debugging experience
+lto           = 'fat'
+opt-level     = 's'

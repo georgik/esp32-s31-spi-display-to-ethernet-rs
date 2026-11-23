@@ -1,0 +1,12 @@
+debug/
+target/
+wiki/
+.vscode/
+.zed/
+.helix/
+.nvim.lua
+**/*.rs.bk
+*.pdb
+.idea/
+**/.DS_Store
+Cargo.lock
