@@ -1,0 +1,98 @@
+# Continuous integration for the ESP32-S31 SPI-to-Ethernet firmware.
+#
+# Scoped to the single ESP32-S31 board (riscv32imafc-unknown-none-elf). This is
+# a trimmed-down version of the multi-board CI in
+# repos/esp32-conways-game-of-life-rs: one `build` job compiles the firmware and
+# runs the lint gate, and an optional `flash` job (manual dispatch only) flashes
+# it over USB-UART when a board is attached.
+#
+# The firmware pins the whole esp-rs stack (see [patch.crates-io] in Cargo.toml)
+# and the board-support crate to exact git revisions of their upstream repos,
+# so a plain checkout is enough - no local `repos/` copy or git submodules are
+# required. cargo fetches those commits from the network during the build.
+
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build + lint (ESP32-S31)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install espflash
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall -y espflash
+
+      - name: Setup Rust stable toolchain (RISC-V)
+        # The runner ships rustup, so install the toolchain directly. Only the
+        # RISC-V external-stdlib target is needed (no Xtensa for this board).
+        run: |
+          rustup toolchain install stable --profile minimal \
+            --component rustfmt --component clippy
+          rustup target add riscv32imafc-unknown-none-elf
+          rustup show
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (default features)
+        run: cargo clippy --target riscv32imafc-unknown-none-elf --locked -- -D warnings
+
+      - name: Clippy (all features)
+        run: cargo clippy --target riscv32imafc-unknown-none-elf --all-features --locked -- -D warnings
+
+      - name: Clippy (release)
+        run: cargo clippy --target riscv32imafc-unknown-none-elf --release --locked -- -D warnings
+
+      - name: Build (release)
+        run: cargo build --target riscv32imafc-unknown-none-elf --release
+
+      - name: Upload firmware artifact
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: esp32-s31-spi-display-to-ethernet.bin
+          path: target/riscv32imafc-unknown-none-elf/release/esp32-s31-spi-display-to-ethernet
+          if-no-files-found: error
+
+  flash:
+    name: Flash (manual, ESP32-S31)
+    needs: build
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install espflash
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall -y espflash
+
+      - name: Locate a attached board
+        id: port
+        run: |
+          # espflash probes for an ESP32-S31 on the USB-UART ports. If none is
+          # attached we exit cleanly so the manual run is not reported as failed.
+          if ! PORT=$(espflash find 2>/dev/null | head -n1) || [ -z "$PORT" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "No ESP32-S31 board attached; skipping flash."
+          else
+            echo "port=$PORT" >> "$GITHUB_OUTPUT"
+            echo "Flashing on $PORT"
+          fi
+
+      - name: Build
+        if: ports.skip != 'true'
+        run: cargo build --target riscv32imafc-unknown-none-elf --release
+
